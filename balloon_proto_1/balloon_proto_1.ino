@@ -6,6 +6,7 @@ extern "C"{
   #include "i2c.h"
   #include "si5351a.h"
 }
+#include "LowPower.h"
 
 int lcdPin = 12;
 
@@ -41,7 +42,7 @@ void loop() {
   if(sats == TinyGPS::GPS_INVALID_SATELLITES) {
     Serial.println("Bad Position Data");
     lcd.print("Sats: "); lcd.print(sats); lcd.write(13);
-    smartdelay(5);
+    smartdelay(5000);
   }
   else {
     toMaidenhead(lat, lon, loc);
@@ -49,10 +50,15 @@ void loop() {
     lcd.write(12);
     lcd.print("Lat:"); lcd.print((int)floor(lat)); lcd.print(" Lon:"); lcd.print((int)floor(lon)); lcd.write(13);
     lcd.print("MDNHD: "); lcd.print(loc);
-    smartdelay(5);
+    smartdelay(10);
   }
 
   smartdelay(2000);
+
+//  Serial.println("Going to low power...");
+//  LowPower.idle(SLEEP_8S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, 
+//                SPI_OFF, USART0_OFF, TWI_OFF);
+//  Serial.println("Back from low power...");
 }
 
 static void smartdelay(unsigned long ms)

@@ -8,6 +8,7 @@
 #include <TinyGPS.h>
 #include <SoftwareSerial.h>
 #include <Wire.h>
+#include "LowPower.h"
 
 
 #define WSPR_TONE_SPACING       146           // ~1.46 Hz
@@ -37,9 +38,7 @@ volatile bool processing = false;
 // Timer1 hits the count set below in setup().
 ISR(TIMER1_COMPA_vect)
 {
-  if(!processing) {
-    proceed = true;
-  }
+  proceed = true;
 }
 
 void setup() {
@@ -53,7 +52,7 @@ void setup() {
   // Initialize the Si5351
   // Change the 2nd parameter in init if using a ref osc other
   // than 25 MHz
-  si5351.init(SI5351_CRYSTAL_LOAD_8PF, 0, 0);
+  si5351.init(SI5351_CRYSTAL_LOAD_8PF, 27000000UL, 0);
 
   // Set CLK0 output
   si5351.drive_strength(SI5351_CLK0, SI5351_DRIVE_8MA); // Set for max power if desired
@@ -75,13 +74,10 @@ void setup() {
 }
 
 void loop() {
-  if(proceed) {
-    processing = true;
-    if(can_transmit()) {
-      encode();
-    }
-    processing = false;
+  if(can_transmit()) {
+    encode();
   }
+  delay(60000);
 }
 
 bool can_transmit() {
@@ -91,7 +87,7 @@ bool can_transmit() {
   byte month, day, hour, minute, second, hundredths;
  
   populate_gps_data();
-  while (retries < 10) {
+  while (retries++ < 10) {
     gps.crack_datetime(&year, &month, &day, &hour, &minute, &second, &hundredths, &fix_age);  
     if (fix_age != TinyGPS::GPS_INVALID_AGE) {
       break;
@@ -138,10 +134,6 @@ void to_maidenhead(double lat, double lon) {
   loc[1] = 'A' + (int)floor(lat / 10);
   loc[2] = (int)floor(fmod((lon / 2), 10.0)) + '0';
   loc[3] = (int)floor(fmod(lat, 10.0)) + '0';
-//  double rLat = (lat - floor(lat)) * 60;
-//  double rLon = (lon - 2 * floor(lon / 2)) * 60;
-//  loc[4] = 'a' + (int)floor(rLon / 5);
-//  loc[5] = 'a' + (int)floor(rLat / 2.5);
   loc[5] = '\0';
 }
 
