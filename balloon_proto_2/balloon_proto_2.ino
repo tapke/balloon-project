@@ -8,22 +8,27 @@
 #include <TinyGPS.h>
 #include <SoftwareSerial.h>
 #include <Wire.h>
-#include "LowPower.h"
 
 
 #define WSPR_TONE_SPACING       146           // ~1.46 Hz
 #define WSPR_CTC                10672         // CTC value for WSPR
-#define WSPR_DEFAULT_FREQ       14150000UL    // 10140200UL
+#define WSPR_DEFAULT_FREQ       10140200UL    //1415000000ULL    // 10140200UL
+
+int lcdPin = 12;
 
 Si5351 si5351;
 JTEncode jtencode;
-TinyGPS gps;
-SoftwareSerial ss(4, 2);
+TinyGPS gps_data;
+SoftwareSerial gps(4, 2);
+unsigned long fix_age;
 
-unsigned long freq;
-char message[] = "KD8UPW EM79";
+SoftwareSerial lcd(255, lcdPin);
+
+uint64_t freq;
+
+char message[] = "NOCALL AA00";
 char call[] = "KD8UPW";
-char loc[] = "EM79";
+char loc[] = "AA00";
 uint8_t dbm = 27;
 uint8_t tx_buffer[255];
 uint8_t symbol_count;
@@ -31,7 +36,6 @@ uint16_t ctc, tone_spacing;
 
 // Global variables used in ISRs
 volatile bool proceed = false;
-volatile bool processing = false;
 
 // Timer interrupt vector.  This toggles the variable we use to gate
 // each column of output to ensure accurate timing.  Called whenever
@@ -42,7 +46,8 @@ ISR(TIMER1_COMPA_vect)
 }
 
 void setup() {
-  ss.begin(9600);
+  init_lcd();
+  gps.begin(9600);
   
   freq = WSPR_DEFAULT_FREQ;
   ctc = WSPR_CTC;
@@ -73,6 +78,15 @@ void setup() {
   interrupts();            // Re-enable interrupts.
 }
 
+void init_lcd() {
+  pinMode(lcdPin, OUTPUT);
+  digitalWrite(lcdPin, HIGH);
+  lcd.begin(9600);
+  delay(100);
+  lcd.write(12);
+  lcd.write(17);
+}
+
 void loop() {
   if(can_transmit()) {
     encode();
@@ -82,23 +96,23 @@ void loop() {
 
 bool can_transmit() {
   float lat, lon;
-  unsigned long fix_age;
   int year, retries;
   byte month, day, hour, minute, second, hundredths;
  
   populate_gps_data();
   while (retries++ < 10) {
-    gps.crack_datetime(&year, &month, &day, &hour, &minute, &second, &hundredths, &fix_age);  
+    gps_data.crack_datetime(&year, &month, &day, &hour, &minute, &second, &hundredths, &fix_age);  
     if (fix_age != TinyGPS::GPS_INVALID_AGE) {
       break;
     }
+    lcd.print("Bad GPS Data"); lcd.write(13);
     delay(1000);
     populate_gps_data();
   }
   if (retries >= 10) {
     return false;
   }
-  gps.f_get_position(&lat, &lon, &fix_age);
+  gps_data.f_get_position(&lat, &lon, &fix_age);
   if (!valid_coords(lat, lon)) {
     return false;
   }
@@ -106,13 +120,14 @@ bool can_transmit() {
     delay((60 - second) * 1000);
   }
   to_maidenhead(lat, lon);
+  display_gps_data(lat, lon);
   return true;
 }
 
 void populate_gps_data() {
   while (true) {
-    while (ss.available()) {
-      if (gps.encode(ss.read())) {
+    while (gps.available()) {
+      if (gps_data.encode(gps.read())) {
         return;
       }
     }
@@ -137,6 +152,20 @@ void to_maidenhead(double lat, double lon) {
   loc[5] = '\0';
 }
 
+void display_gps_data(double lat, double lon) {
+  lcd.write(12);
+  lcd.print("Lat:"); lcd.print((int)floor(lat)); lcd.print(" Lon:"); lcd.print((int)floor(lon)); lcd.write(13);
+  lcd.print("MDNHD: "); lcd.print(loc);
+  delay(50);
+}
+
+void display_transmitting() {
+  lcd.write(12);
+  lcd.print("XMIT ... "); lcd.write(13);
+  lcd.print(call); lcd.print(" "); lcd.print(loc); 
+  delay(50);
+}
+
 // Loop through the string, transmitting one character at a time.
 void encode()
 {
@@ -150,18 +179,17 @@ void encode()
 
   // Reset the tone to the base frequency and turn on the output
   si5351.output_enable(SI5351_CLK0, 1);
-//  digitalWrite(LED_PIN, HIGH);
 
   for(i = 0; i < symbol_count; i++)
   {
-      si5351.set_freq((freq * 100) + (tx_buffer[i] * tone_spacing), SI5351_CLK0);
+      si5351.set_freq((freq * SI5351_FREQ_MULT) + (tx_buffer[i] * tone_spacing), SI5351_CLK0);
       proceed = false;
       while(!proceed);
   }
 
   // Turn off the output
   si5351.output_enable(SI5351_CLK0, 0);
-  //digitalWrite(LED_PIN, LOW);
+  
 }
 
 
