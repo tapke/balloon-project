@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <si5351.h>
 #include <JTEncode.h>
 #include <rs_common.h>
 #include <int.h>
@@ -7,30 +6,32 @@
 #include <string.h>
 #include <TinyGPS.h>
 #include <SoftwareSerial.h>
-#include <Wire.h>
 
+extern "C" {
+  #include "i2c.h"
+  #include "si5351a.h"
+}
 
-#define WSPR_TONE_SPACING       146             // ~1.46 Hz
+#define WSPR_TONE_SPACING       1.4648          // 1.4648 Hz
 #define WSPR_CTC                10672           // CTC value for WSPR
-#define WSPR_DEFAULT_FREQ       1014020000ULL   // 10.1402 Mhz
+#define WSPR_DEFAULT_FREQ       10140000UL      // 10.1400 Mhz
 #define PLL_FREQ                90000000000ULL  // 900 Mhz
 
 int lcdPin = 12;
 
-Si5351 si5351;
 JTEncode jtencode;
 TinyGPS gps_data;
 
-SoftwareSerial lcd(255, lcdPin);
 SoftwareSerial gps(4, 2); // RX Pin, TX Pin
 
 char message[] = "NOCALL AA00";
-char call[] = "KD8UPW";
+char call_sign[] = "KD8UPW";
 char loc[] = "AA00";
-uint8_t dbm = 27;
+uint8_t dbm = 10;
 uint8_t tx_buffer[255];
 uint8_t symbol_count;
-uint16_t ctc, tone_spacing;
+uint16_t ctc;
+float tone_spacing;
 
 // Global variables used in ISRs
 volatile bool proceed = false;
@@ -44,7 +45,6 @@ ISR(TIMER1_COMPA_vect)
 }
 
 void setup() {
-  init_lcd();
   gps.begin(9600);
   Serial.begin(115200);
   
@@ -52,21 +52,9 @@ void setup() {
   symbol_count = WSPR_SYMBOL_COUNT; // From the library defines
   tone_spacing = WSPR_TONE_SPACING;  
 
-  // Initialize the Si5351
-  // 27 MHz reference oscillator
-  si5351.init(SI5351_CRYSTAL_LOAD_8PF, 27000000UL, 0);
+  i2cInit();
+  //si5351aSetFrequency(WSPR_DEFAULT_FREQ);
 
-  si5351.output_enable(SI5351_CLK0, 0); // Disable the clock initially
-  si5351.output_enable(SI5351_CLK1, 0);
-  si5351.output_enable(SI5351_CLK2, 0);
-  
-  // Set CLK0 to output 10 MHz
-  //si5351.set_ms_source(SI5351_CLK0, SI5351_PLLA);
-  si5351.set_freq(WSPR_DEFAULT_FREQ, SI5351_CLK0);
-  
-  // Query a status update and wait a bit to let the Si5351 populate the
-  // status flags correctly.
-  si5351.update_status();
   delay(500);
 
   // Set up Timer1 for interrupts every symbol period.
@@ -84,15 +72,6 @@ void setup() {
   interrupts();            // Re-enable interrupts.
 }
 
-void init_lcd() {
-  pinMode(lcdPin, OUTPUT);
-  digitalWrite(lcdPin, HIGH);
-  lcd.begin(9600);
-  delay(100);
-  lcd.write(12);
-  lcd.write(17);
-}
-
 void loop() {
   if(can_transmit()) {
     encode();
@@ -102,7 +81,7 @@ void loop() {
 
 bool can_transmit() {
   float lat, lon;
-  unsigned long fix_age;
+  unsigned long fix_age, millis_to_wait, sec_mult;
   int year, retries;
   byte month, day, hour, minute, second, hundredths;
  
@@ -111,6 +90,16 @@ bool can_transmit() {
   while (retries++ < 10) {
     gps_data.crack_datetime(&year, &month, &day, &hour, &minute, &second, &hundredths, &fix_age);  
     if (fix_age != TinyGPS::GPS_INVALID_AGE) {
+      sec_mult = minute % 2;
+      sec_mult *= 60;
+      sec_mult += second;
+      sec_mult = 120 - sec_mult;
+      Serial.print("HH: "); Serial.print(hour); Serial.print(" mm: "); Serial.print(minute);
+      Serial.print(" ss: "); Serial.print(second);
+      Serial.println();
+      Serial.print("sec_mult: "); Serial.println(sec_mult);
+      millis_to_wait = sec_mult * 1000;
+      Serial.print("Millis to wait: "); Serial.println(millis_to_wait);
       break;
     }
     delay(1000);
@@ -123,11 +112,10 @@ bool can_transmit() {
   if (!valid_coords(lat, lon)) {
     return false;
   }
-  if(minute % 2 != 0) {
-    delay((60 - second) * 1000);
+  if(millis_to_wait != 0) {
+    delay(millis_to_wait);
   }
   to_maidenhead(lat, lon);
-  display_gps_data(lat, lon);
 
   return true;
 }
@@ -159,40 +147,49 @@ void to_maidenhead(double lat, double lon) {
   loc[1] = 'A' + (int)floor(lat / 10);
   loc[2] = (int)floor(fmod((lon / 2), 10.0)) + '0';
   loc[3] = (int)floor(fmod(lat, 10.0)) + '0';
-  loc[5] = '\0';
-}
-
-void display_gps_data(double lat, double lon) {
-  lcd.write(12);
-  lcd.print("Lat:"); lcd.print((int)floor(lat)); lcd.print(" Lon:"); lcd.print((int)floor(lon)); lcd.write(13);
-  lcd.print("MDNHD: "); lcd.print(loc);
-  delay(50);
+  loc[4] = '\0';
 }
 
 // Loop through the string, transmitting one character at a time.
 void encode()
 {
+  Serial.println("Inside encode");
   uint8_t i;
+  unsigned long tx_freq;
+  char print_byte[3];
 
+  Serial.print("call_sign: "); Serial.println(call_sign);
+  Serial.print("loc: "); Serial.println(loc);
+  Serial.print("dbm: "); Serial.println(dbm);
+  
   // Clear out the old transmit buffer
   memset(tx_buffer, 0, 255);
 
   // Set the proper frequency and timer CTC depending on mode
-  jtencode.wspr_encode(call, loc, dbm, tx_buffer);
+  jtencode.wspr_encode(call_sign, loc, dbm, tx_buffer);
 
-  // Reset the tone to the base frequency and turn on the output
-  si5351.output_enable(SI5351_CLK0, 1);
-
+//  for(i = 0; i < symbol_count; i++)
+//  {
+//    if(i % 54 == 0) {
+//      Serial.println();
+//    }
+//    sprintf(print_byte, "%02x ", tx_buffer[i]);
+//    Serial.print(print_byte);
+//  }
+//  Serial.println(); Serial.println();
+  si5351aSetClk1Frequency(150000000UL);
+  
   for(i = 0; i < symbol_count; i++)
   {
-    //Serial.println(tx_buffer[i]);
-    si5351.set_freq(WSPR_DEFAULT_FREQ + (tx_buffer[i] * tone_spacing), SI5351_CLK0);
+    tx_freq = WSPR_DEFAULT_FREQ + (tx_buffer[i] * tone_spacing);
+    si5351aSetFrequency(tx_freq);
     proceed = false;
     while(!proceed);
   }
 
   // Turn off the output
-  si5351.output_enable(SI5351_CLK0, 0);
+  si5351aOutputOff(SI_CLK0_CONTROL);
+  si5351aOutputOff(SI_CLK1_CONTROL);
 
   memset(loc, 0, 5);
 }
