@@ -76,7 +76,7 @@ void loop() {
   if(can_transmit()) {
     encode();
   }
-  delay(60000);
+  delay(90000);
 }
 
 bool can_transmit() {
