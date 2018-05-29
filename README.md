@@ -1,3 +1,3 @@
 # WC8EMA Balloon Project
 
- This is the github repo containing the Arduino code for our long-distance balloon project. Currently, balloon_proto_1 is the code base, but this will grow rapidly. Open balloon_proto_1.ino in the Arduino IDE
+ This is the github repo containing the Arduino code for our long-distance balloon project. Currently, balloon_proto_4 is the working code base. Open balloon_proto_4.ino in the Arduino IDE
